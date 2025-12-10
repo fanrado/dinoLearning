@@ -152,8 +152,9 @@ if __name__ == '__main__':
         # user has not specified any image - we use our own image
         print("Please use the `--image_path` argument to indicate the path of the image you wish to visualize.")
         print("Since no image path have been provided, we take the first image in our paper.")
-        response = requests.get("https://dl.fbaipublicfiles.com/dino/img.png")
-        img = Image.open(BytesIO(response.content))
+        # response = requests.get("https://dl.fbaipublicfiles.com/dino/img.png")
+        # img = Image.open(BytesIO(response.content))
+        img = Image.open("cow-beach.jpg")
         img = img.convert('RGB')
     elif os.path.isfile(args.image_path):
         with open(args.image_path, 'rb') as f:
@@ -168,16 +169,19 @@ if __name__ == '__main__':
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
     img = transform(img)
-
+    print(f'Image shape after transform: {img.shape}')
     # make the image divisible by the patch size
     w, h = img.shape[1] - img.shape[1] % args.patch_size, img.shape[2] - img.shape[2] % args.patch_size
     img = img[:, :w, :h].unsqueeze(0)
+    print(f'Final image size: {img.shape}')
 
     w_featmap = img.shape[-2] // args.patch_size
     h_featmap = img.shape[-1] // args.patch_size
+    print(f'Feature map size: {(w_featmap, h_featmap)}')
 
     attentions = model.get_last_selfattention(img.to(device))
-
+    print(f'Raw attention map shape: {attentions.shape}')
+    
     nh = attentions.shape[1] # number of head
 
     # we keep only the output patch attention
