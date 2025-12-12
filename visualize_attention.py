@@ -114,6 +114,10 @@ if __name__ == '__main__':
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     # build model
     model = vits.__dict__[args.arch](patch_size=args.patch_size, num_classes=0)
+    # print(f"Model {args.arch} built.")
+    # print(f'Dict : {vits.__dict__.keys()}')
+    # sys.exit()
+
     for p in model.parameters():
         p.requires_grad = False
     model.eval()
@@ -186,6 +190,7 @@ if __name__ == '__main__':
 
     # we keep only the output patch attention
     attentions = attentions[0, :, 0, 1:].reshape(nh, -1)
+    print(f'Attention map shape after removing CLS token: {attentions.shape}')
 
     if args.threshold is not None:
         # we keep only a certain percentage of the mass
@@ -201,7 +206,10 @@ if __name__ == '__main__':
         th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
 
     attentions = attentions.reshape(nh, w_featmap, h_featmap)
+    print(f'Attention map shape before upsampling: {attentions.shape}')
+
     attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+    print(f'Attention map shape after upsampling: {attentions.shape}')
 
     # save attentions heatmaps
     os.makedirs(args.output_dir, exist_ok=True)
@@ -214,4 +222,6 @@ if __name__ == '__main__':
     if args.threshold is not None:
         image = skimage.io.imread(os.path.join(args.output_dir, "img.png"))
         for j in range(nh):
-            display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) +".png"), blur=False)
+            display_instances(image, th_attn[j], 
+                              fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) +".png"), 
+                              blur=False)
