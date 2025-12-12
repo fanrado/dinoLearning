@@ -190,7 +190,7 @@ if __name__ == '__main__':
 
     # we keep only the output patch attention
     attentions = attentions[0, :, 0, 1:].reshape(nh, -1)
-    print(f'Attention map shape after removing CLS token: {attentions.shape}')
+
 
     if args.threshold is not None:
         # we keep only a certain percentage of the mass
