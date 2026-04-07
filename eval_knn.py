@@ -23,6 +23,8 @@ from torchvision import datasets
 from torchvision import transforms as pth_transforms
 from torchvision import models as torchvision_models
 
+from sklearn.model_selection import train_test_split
+
 import utils
 import vision_transformer as vits
 
@@ -35,8 +37,16 @@ def extract_feature_pipeline(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = ReturnIndexDataset(os.path.join(args.data_path, "train"), transform=transform)
-    dataset_val = ReturnIndexDataset(os.path.join(args.data_path, "val"), transform=transform)
+    full_dataset = datasets.ImageFolder(args.data_path, transform=transform)
+    all_labels = [s[1] for s in full_dataset.samples]
+    train_indices, val_indices = train_test_split(
+        range(len(full_dataset)),
+        test_size=args.val_split,
+        random_state=42,
+        stratify=all_labels,
+    )
+    dataset_train = SplitIndexDataset(full_dataset, train_indices)
+    dataset_val   = SplitIndexDataset(full_dataset, val_indices)
     sampler = torch.utils.data.DistributedSampler(dataset_train, shuffle=False)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
@@ -81,8 +91,8 @@ def extract_feature_pipeline(args):
         train_features = nn.functional.normalize(train_features, dim=1, p=2)
         test_features = nn.functional.normalize(test_features, dim=1, p=2)
 
-    train_labels = torch.tensor([s[-1] for s in dataset_train.samples]).long()
-    test_labels = torch.tensor([s[-1] for s in dataset_val.samples]).long()
+    train_labels = torch.tensor([full_dataset.samples[i][-1] for i in train_indices]).long()
+    test_labels  = torch.tensor([full_dataset.samples[i][-1] for i in val_indices]).long()
     # save features and labels
     if args.dump_features and dist.get_rank() == 0:
         torch.save(train_features.cpu(), os.path.join(args.dump_features, "trainfeat.pth"))
@@ -182,10 +192,18 @@ def knn_classifier(train_features, train_labels, test_features, test_labels, k, 
     return top1, top5
 
 
-class ReturnIndexDataset(datasets.ImageFolder):
-    def __getitem__(self, idx):
-        img, lab = super(ReturnIndexDataset, self).__getitem__(idx)
-        return img, idx
+class SplitIndexDataset(torch.utils.data.Dataset):
+    """Wraps an ImageFolder with a subset of indices; returns (img, local_idx)."""
+    def __init__(self, dataset, indices):
+        self.dataset = dataset
+        self.indices = list(indices)
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, local_idx):
+        img, _ = self.dataset[self.indices[local_idx]]
+        return img, local_idx
 
 
 if __name__ == '__main__':
@@ -211,6 +229,8 @@ if __name__ == '__main__':
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--data_path', default='/path/to/imagenet/', type=str)
+    parser.add_argument('--val_split', default=0.2, type=float,
+        help='Fraction of the dataset to use as validation set (default: 0.2)')
     args = parser.parse_args()
 
     utils.init_distributed_mode(args)
