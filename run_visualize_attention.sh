@@ -13,7 +13,8 @@ PATCH_SIZE=16
 CHECKPOINT_KEY="teacher"
 
 # Path to the image to visualize
-IMAGE_PATH="./cow-beach.jpg"
+# IMAGE_PATH="./cow-beach.jpg"
+IMAGE_PATH="./PetImages/Cat/1.jpg"
 
 # Resize the image to this size before processing
 IMAGE_SIZE="480 480"

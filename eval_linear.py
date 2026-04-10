@@ -24,6 +24,8 @@ from torchvision import datasets
 from torchvision import transforms as pth_transforms
 from torchvision import models as torchvision_models
 
+from sklearn.model_selection import train_test_split
+
 import utils
 import vision_transformer as vits
 
@@ -62,13 +64,37 @@ def eval_linear(args):
     linear_classifier = nn.parallel.DistributedDataParallel(linear_classifier, device_ids=[args.gpu])
 
     # ============ preparing data ... ============
+    train_transform = pth_transforms.Compose([
+        pth_transforms.RandomResizedCrop(224),
+        pth_transforms.RandomHorizontalFlip(),
+        pth_transforms.ToTensor(),
+        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
     val_transform = pth_transforms.Compose([
         pth_transforms.Resize(256, interpolation=3),
         pth_transforms.CenterCrop(224),
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+
+    # Split dataset into train/val using stratified sampling
+    full_dataset = datasets.ImageFolder(args.data_path)
+    all_labels = [s[1] for s in full_dataset.samples]
+    train_indices, val_indices = train_test_split(
+        range(len(full_dataset)),
+        test_size=args.val_split,
+        random_state=42,
+        stratify=all_labels,
+    )
+
+    # Apply separate transforms by wrapping the same path with two ImageFolder instances
+    dataset_train = torch.utils.data.Subset(
+        datasets.ImageFolder(args.data_path, transform=train_transform), train_indices
+    )
+    dataset_val = torch.utils.data.Subset(
+        datasets.ImageFolder(args.data_path, transform=val_transform), val_indices
+    )
+
     val_loader = torch.utils.data.DataLoader(
         dataset_val,
         batch_size=args.batch_size_per_gpu,
@@ -82,13 +108,6 @@ def eval_linear(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
-    train_transform = pth_transforms.Compose([
-        pth_transforms.RandomResizedCrop(224),
-        pth_transforms.RandomHorizontalFlip(),
-        pth_transforms.ToTensor(),
-        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -276,6 +295,8 @@ if __name__ == '__main__':
     parser.add_argument('--val_freq', default=1, type=int, help="Epoch frequency for validation.")
     parser.add_argument('--output_dir', default=".", help='Path to save logs and checkpoints')
     parser.add_argument('--num_labels', default=1000, type=int, help='Number of labels for linear classifier')
+    parser.add_argument('--val_split', default=0.2, type=float,
+        help='Fraction of the dataset to use as validation set (default: 0.2)')
     parser.add_argument('--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
     args = parser.parse_args()
     eval_linear(args)
