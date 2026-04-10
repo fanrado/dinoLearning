@@ -129,7 +129,7 @@ if [ "$RUN_PASS1" = true ]; then
         --global_crops_scale $P1_GLOBAL_CROPS_SCALE \
         --local_crops_scale $P1_LOCAL_CROPS_SCALE \
         --local_crops_number "$P1_LOCAL_CROPS_NUMBER" \
-        --data_path "${DATA_PATH}/train" \
+        --data_path "$DATA_PATH" \
         --output_dir "$PASS1_OUTPUT"
 
     echo "Pass 1 complete. Checkpoint saved to: $PASS1_OUTPUT"
@@ -186,7 +186,7 @@ if [ "$RUN_PASS2" = true ]; then
         --local_crops_scale $P2_LOCAL_CROPS_SCALE \
         --local_crops_number "$P2_LOCAL_CROPS_NUMBER" \
         --pretrained_weights "$PASS1_CHECKPOINT" \
-        --data_path "${DATA_PATH}/train" \
+        --data_path "$DATA_PATH" \
         --output_dir "$PASS2_OUTPUT"
 
     echo "Pass 2 complete. Checkpoint saved to: $PASS2_OUTPUT"

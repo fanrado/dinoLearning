@@ -27,26 +27,21 @@ Standard end-to-end supervised training mixes both signals simultaneously, often
 
 ### Dataset Preparation
 
-The dataset must be organized in `torchvision.datasets.ImageFolder` format:
+The dataset must be organized in `torchvision.datasets.ImageFolder` format, with one sub-directory per class directly under the root:
 
 ```
-data/
-  cats_dogs/
-    train/          # ~20,000 images (80%)
-      cat/
-        cat_00001.jpg
-        ...
-      dog/
-        dog_00001.jpg
-        ...
-    val/            # ~5,000 images (20%)
-      cat/
-        ...
-      dog/
-        ...
+PetImages/
+  Cat/
+    cat_00001.jpg
+    cat_00002.jpg
+    ...
+  Dog/
+    dog_00001.jpg
+    dog_00002.jpg
+    ...
 ```
 
-A standard 80/20 random split is recommended. Ensure roughly equal class balance (≈12,500 cats, ≈12,500 dogs) to avoid bias.
+**No manual train/val split is required.** `eval_knn.py` performs a stratified 80/20 split internally using `sklearn.model_selection.train_test_split` (controlled by `--val_split 0.2`). `main_dino.py` uses the full dataset for self-supervised pre-training — labels are not used during Pass 1. Ensure roughly equal class balance (≈12,500 cats, ≈12,500 dogs) to avoid bias.
 
 ---
 
@@ -92,11 +87,13 @@ python main_dino.py \
     --global_crops_scale 0.4 1.0 \
     --local_crops_scale 0.05 0.4 \
     --local_crops_number 8 \
-    --data_path /path/to/cats_dogs/train \
+    --data_path /path/to/cats_dogs \
     --output_dir /path/to/outputs/pass1
 ```
 
 > **Note on learning rate:** The base LR of 0.0005 assumes a batch size of 256. For a batch of 64 (single GPU), the effective LR is scaled linearly: `0.0005 × 64/256 = 0.000125`. Adjust if using multiple GPUs.
+>
+> **Note on dataset path:** Pass `--data_path` pointing to the root of the ImageFolder (e.g. `PetImages/` containing `Cat/` and `Dog/`). `main_dino.py` loads the full dataset directly; `eval_knn.py` handles the train/val split internally via `sklearn.train_test_split`.
 
 #### Training command (multi-GPU, recommended)
 
@@ -119,7 +116,7 @@ python -m torch.distributed.launch --nproc_per_node=4 main_dino.py \
     --global_crops_scale 0.4 1.0 \
     --local_crops_scale 0.05 0.4 \
     --local_crops_number 8 \
-    --data_path /path/to/cats_dogs/train \
+    --data_path /path/to/cats_dogs \
     --output_dir /path/to/outputs/pass1
 ```
 
@@ -218,7 +215,7 @@ python main_dino.py \
     --local_crops_scale 0.5 0.8 \
     --local_crops_number 2 \
     --pretrained_weights /path/to/outputs/pass1/checkpoint.pth \
-    --data_path /path/to/cats_dogs/train \
+    --data_path /path/to/cats_dogs \
     --output_dir /path/to/outputs/pass2_finetune
 ```
 
