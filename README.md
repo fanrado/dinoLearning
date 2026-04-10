@@ -9,6 +9,305 @@ PyTorch implementation and pretrained models for DINO. For details, see **Emergi
   <img width="100%" alt="DINO illustration" src=".github/dino.gif">
 </div>
 
+---
+
+## Iterative Training Plan: Cats & Dogs (25k samples)
+
+This section describes a two-pass iterative training strategy applied to a 25k-sample cats/dogs dataset. The approach is designed to be **dataset-agnostic** and reusable for any binary or multi-class image dataset.
+
+### Motivation
+
+Visual recognition requires two complementary types of knowledge:
+- **Shape/structure** — the silhouette, pose, proportions, and edges that define an object's geometry.
+- **Color/texture/fine detail** — the subtle tonal patterns, fur textures, and color distributions that further discriminate classes.
+
+Standard end-to-end supervised training mixes both signals simultaneously, often causing the model to shortcut on color rather than building robust shape representations first. The iterative strategy below forces a clean separation: the first pass builds shape-invariant representations; the second pass refines them with color and detail.
+
+---
+
+### Dataset Preparation
+
+The dataset must be organized in `torchvision.datasets.ImageFolder` format:
+
+```
+data/
+  cats_dogs/
+    train/          # ~20,000 images (80%)
+      cat/
+        cat_00001.jpg
+        ...
+      dog/
+        dog_00001.jpg
+        ...
+    val/            # ~5,000 images (20%)
+      cat/
+        ...
+      dog/
+        ...
+```
+
+A standard 80/20 random split is recommended. Ensure roughly equal class balance (≈12,500 cats, ≈12,500 dogs) to avoid bias.
+
+---
+
+### Pass 1 — Self-Supervised Pre-training: Shape Learning
+
+**Goal:** Train the backbone using the DINO self-supervised objective with **all available augmentations** enabled. The heavy color distortions and grayscale conversion remove color as a reliable cue, forcing the model to learn geometry, edges, and structural patterns.
+
+#### Augmentation pipeline (DataAugmentationDINO — default behavior)
+
+| Augmentation | Applied to | Setting |
+|---|---|---|
+| RandomResizedCrop | Global views | scale `[0.4, 1.0]`, size 224×224 |
+| RandomResizedCrop | Local views (×8) | scale `[0.05, 0.4]`, size 96×96 |
+| RandomHorizontalFlip | All views | p=0.5 |
+| ColorJitter | All views | brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1, p=0.8 |
+| RandomGrayscale | All views | **p=0.2** — key for shape invariance |
+| GaussianBlur | Global view 1 | **p=1.0** (always applied) |
+| GaussianBlur | Global view 2 | p=0.1 |
+| GaussianBlur | Local views | p=0.5 |
+| Solarization | Global view 2 | **p=0.2** — additional color disruption |
+| Normalize | All views | mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225) |
+
+The combination of ColorJitter + RandomGrayscale + Solarization makes color an **unreliable** signal across the student/teacher views. The DINO loss then rewards consistency on shape features only.
+
+#### Training command (single GPU)
+
+```bash
+python main_dino.py \
+    --arch vit_small \
+    --patch_size 16 \
+    --epochs 200 \
+    --warmup_epochs 10 \
+    --batch_size_per_gpu 64 \
+    --lr 0.00025 \
+    --min_lr 1e-6 \
+    --weight_decay 0.04 \
+    --weight_decay_end 0.4 \
+    --teacher_temp 0.04 \
+    --warmup_teacher_temp 0.04 \
+    --warmup_teacher_temp_epochs 30 \
+    --momentum_teacher 0.996 \
+    --norm_last_layer false \
+    --global_crops_scale 0.4 1.0 \
+    --local_crops_scale 0.05 0.4 \
+    --local_crops_number 8 \
+    --data_path /path/to/cats_dogs/train \
+    --output_dir /path/to/outputs/pass1
+```
+
+> **Note on learning rate:** The base LR of 0.0005 assumes a batch size of 256. For a batch of 64 (single GPU), the effective LR is scaled linearly: `0.0005 × 64/256 = 0.000125`. Adjust if using multiple GPUs.
+
+#### Training command (multi-GPU, recommended)
+
+```bash
+python -m torch.distributed.launch --nproc_per_node=4 main_dino.py \
+    --arch vit_small \
+    --patch_size 16 \
+    --epochs 200 \
+    --warmup_epochs 10 \
+    --batch_size_per_gpu 64 \
+    --lr 0.0005 \
+    --min_lr 1e-6 \
+    --weight_decay 0.04 \
+    --weight_decay_end 0.4 \
+    --teacher_temp 0.04 \
+    --warmup_teacher_temp 0.04 \
+    --warmup_teacher_temp_epochs 30 \
+    --momentum_teacher 0.996 \
+    --norm_last_layer false \
+    --global_crops_scale 0.4 1.0 \
+    --local_crops_scale 0.05 0.4 \
+    --local_crops_number 8 \
+    --data_path /path/to/cats_dogs/train \
+    --output_dir /path/to/outputs/pass1
+```
+
+#### Key hyperparameter rationale
+
+| Parameter | Value | Why |
+|---|---|---|
+| `--arch vit_small --patch_size 16` | ViT-S/16 | Best compute/accuracy trade-off for ~25k images; 21M parameters, generalizes well at this scale |
+| `--epochs 200` | 200 | With only 25k images, more epochs are needed to see sufficient augmented views per sample compared to ImageNet-scale training |
+| `--norm_last_layer false` | disabled | Empirically improves DINO quality on smaller datasets (per official boosting recipe) |
+| `--warmup_teacher_temp_epochs 30` | 30 | Stable early training; prevents teacher collapsing when dataset is small |
+| `--local_crops_number 8` | 8 | 10 total views (2 global + 8 local) per image; more views improve self-supervised signal quality |
+| `--global_crops_scale 0.4 1.0` | full range | Large crops anchor the global view; small min-scale exposes partial views for context learning |
+
+#### Convergence monitoring
+
+Track the following metrics during Pass 1 (available in training logs):
+
+- **DINO loss**: should decrease steadily and plateau. For 25k images, expect meaningful convergence by epoch 80–100.
+- **k-NN accuracy** (run periodically with `eval_knn.py`): use as a proxy for representation quality without committing to a full linear evaluation.
+- **Self-attention maps** (run `visualize_attention.py`): at convergence the [CLS] attention heads should segment foreground objects (cat/dog bodies) cleanly, with no attention on background.
+
+```bash
+# Quick k-NN check after Pass 1
+python -m torch.distributed.launch --nproc_per_node=1 eval_knn.py \
+    --pretrained_weights /path/to/outputs/pass1/checkpoint.pth \
+    --checkpoint_key teacher \
+    --data_path /path/to/cats_dogs \
+    --nb_knn 20
+```
+
+**Pass 1 is complete** when the k-NN accuracy plateaus across 10+ consecutive epochs and attention maps cleanly separate cat/dog foregrounds from backgrounds.
+
+---
+
+### Pass 2 — Supervised Fine-tuning: Color and Detail Learning
+
+**Goal:** Using the shape-rich backbone from Pass 1 as initialization, fine-tune the full model (or a linear head) with **minimal augmentations**. With color information now preserved and reliable, the model learns the color distributions, fur textures, and fine-grained visual cues that further separate cats from dogs.
+
+#### Why minimal augmentations here
+
+In Pass 1, color augmentations were essential to block color shortcuts and build shape invariance. In Pass 2, that invariance is already baked into the weights. Applying the same aggressive augmentations would **erase the color signal** the model needs to learn in this pass. The goal is the opposite: preserve colors faithfully so the model can learn from them.
+
+#### Augmentation pipeline (Pass 2 — minimal)
+
+| Augmentation | Setting | Rationale |
+|---|---|---|
+| RandomResizedCrop(224) | scale `[0.8, 1.0]` | Gentle crop only; preserves spatial color context |
+| RandomHorizontalFlip | p=0.5 | Spatial only; does not affect color |
+| **No** ColorJitter | disabled | Color must be preserved as a learning signal |
+| **No** RandomGrayscale | disabled | Color channels are informative |
+| **No** GaussianBlur | disabled | Preserves fine texture detail |
+| **No** Solarization | disabled | No color inversion |
+| Normalize | mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225) | Standard normalization only |
+
+#### Option A — Linear probe (fastest, backbone frozen)
+
+Best for quickly validating Pass 1 quality and when the backbone is already very strong.
+
+```bash
+python -m torch.distributed.launch --nproc_per_node=1 eval_linear.py \
+    --arch vit_small \
+    --patch_size 16 \
+    --pretrained_weights /path/to/outputs/pass1/checkpoint.pth \
+    --checkpoint_key teacher \
+    --epochs 100 \
+    --lr 0.001 \
+    --batch_size_per_gpu 128 \
+    --data_path /path/to/cats_dogs \
+    --output_dir /path/to/outputs/pass2_linear
+```
+
+The linear probe freezes all backbone weights and only trains the final classification layer. The minimal augmentation constraint is naturally enforced via the `eval_linear.py` transform pipeline (RandomResizedCrop + HorizontalFlip only, no color distortion).
+
+#### Option B — Full fine-tuning (deeper color integration)
+
+Unfreezes the backbone and trains end-to-end at a very low learning rate. This lets the backbone itself adapt to color cues while retaining the shape structure from Pass 1. This is the recommended path for maximizing final accuracy.
+
+```bash
+python main_dino.py \
+    --arch vit_small \
+    --patch_size 16 \
+    --epochs 100 \
+    --warmup_epochs 5 \
+    --batch_size_per_gpu 64 \
+    --lr 0.00005 \
+    --min_lr 1e-7 \
+    --weight_decay 0.04 \
+    --weight_decay_end 0.04 \
+    --teacher_temp 0.04 \
+    --warmup_teacher_temp 0.04 \
+    --warmup_teacher_temp_epochs 0 \
+    --momentum_teacher 0.9996 \
+    --norm_last_layer true \
+    --global_crops_scale 0.8 1.0 \
+    --local_crops_scale 0.5 0.8 \
+    --local_crops_number 2 \
+    --pretrained_weights /path/to/outputs/pass1/checkpoint.pth \
+    --data_path /path/to/cats_dogs/train \
+    --output_dir /path/to/outputs/pass2_finetune
+```
+
+> **Key changes from Pass 1:**
+> - LR reduced 10× (`0.00005` vs `0.0005`) — prevents catastrophic forgetting of shape features
+> - `--global_crops_scale 0.8 1.0` — conservative crops, preserves color context
+> - `--local_crops_number 2` — fewer local crops; less distortion per image
+> - `--local_crops_scale 0.5 0.8` — larger local crop scale, less extreme viewpoint change
+> - No ColorJitter / Grayscale / Solarization applied (set `--color_jitter 0.0` if exposed as a flag, otherwise modify `DataAugmentationDINO` in `main_dino.py` directly)
+
+#### Modifying DataAugmentationDINO for Pass 2
+
+To fully disable color augmentations, edit `main_dino.py` in the `DataAugmentationDINO.__init__` method. Replace the color transform block with identity transforms:
+
+```python
+# Pass 2: minimal augmentation — comment out or replace the color block
+color_jitter = transforms.Compose([])          # no-op: was ColorJitter
+# transforms.RandomGrayscale(p=0.2)            # disabled
+# GaussianBlur(...)                             # disabled
+# Solarization(...)                             # disabled
+```
+
+This ensures the augmentation pipeline for Pass 2 is strictly:
+```
+RandomResizedCrop(scale=[0.8, 1.0]) → RandomHorizontalFlip → Normalize
+```
+
+#### Convergence monitoring for Pass 2
+
+- **Linear / full fine-tuning accuracy on val set**: primary convergence signal. With 25k images and a strong Pass 1 backbone, expect >90% binary accuracy within 30–50 epochs.
+- **Loss curve**: should decrease quickly (good initialization from Pass 1) and stabilize.
+- **Attention maps**: Run `visualize_attention.py` again. Attention should now be drawn to color-discriminative regions (orange fur patches, eye color, coat patterns) in addition to shape boundaries.
+
+---
+
+### Evaluation After Each Pass
+
+```bash
+# k-NN evaluation (no training, pure feature quality check)
+python -m torch.distributed.launch --nproc_per_node=1 eval_knn.py \
+    --pretrained_weights /path/to/outputs/passN/checkpoint.pth \
+    --checkpoint_key teacher \
+    --data_path /path/to/cats_dogs \
+    --nb_knn 5 10 20
+
+# Linear probe evaluation
+python -m torch.distributed.launch --nproc_per_node=1 eval_linear.py \
+    --arch vit_small \
+    --patch_size 16 \
+    --pretrained_weights /path/to/outputs/passN/checkpoint.pth \
+    --checkpoint_key teacher \
+    --epochs 100 \
+    --data_path /path/to/cats_dogs \
+    --output_dir /path/to/outputs/passN_linear_eval
+```
+
+Compare k-NN and linear accuracy across Pass 1 and Pass 2 to confirm each pass adds value.
+
+---
+
+### Summary: Two-Pass Iterative Training
+
+| | Pass 1 (Pre-training) | Pass 2 (Fine-tuning) |
+|---|---|---|
+| **Script** | `main_dino.py` | `eval_linear.py` or `main_dino.py` |
+| **Supervision** | Self-supervised (DINO) | Supervised (labels used) |
+| **Augmentations** | Full: ColorJitter, Grayscale, Blur, Solarize, multi-crop | Minimal: Crop + Flip only |
+| **Color signal** | Disrupted (shape forced) | Preserved (color learned) |
+| **LR** | 0.0005 | 0.001 (linear) / 0.00005 (full FT) |
+| **Epochs** | 200 | 100 |
+| **Crop scale** | Global: 0.4–1.0, Local: 0.05–0.4 | Global: 0.8–1.0, Local: 0.5–0.8 |
+| **Primary signal learned** | Shape, edges, structure | Color, texture, fine detail |
+| **Output** | Pre-trained backbone (teacher) | Classifier checkpoint |
+
+---
+
+### Extending to Other Datasets
+
+This two-pass pattern is intentionally dataset-agnostic. To apply it to a new dataset:
+
+1. **Organize data** in `ImageFolder` format under a new directory (e.g., `data/birds/train/{class}/`).
+2. **Run Pass 1** with the same command, replacing `--data_path`. No label information is used — the self-supervised objective works on any image collection.
+3. **Run Pass 2** pointing `--pretrained_weights` to the Pass 1 checkpoint. If the new dataset has more classes, adjust the classifier head (handled automatically in `eval_linear.py` via `--num_labels`).
+4. **Scale epochs** proportionally to dataset size. A rough guide: aim for ~1,000–2,000 total augmented-view passes per sample. With 25k images and 200 epochs × 10 views, that is `25,000 × 200 × 10 = 50M` total crop observations.
+
+The key invariant to preserve across datasets: **Pass 1 must destroy color; Pass 2 must preserve it.**
+
+---
+
 ## Pretrained models
 You can choose to download only the weights of the pretrained backbone used for downstream tasks, or the full checkpoint which contains backbone and projection head weights for both student and teacher networks. We also provide the backbone in `onnx` format, as well as detailed arguments and training/evaluation logs. Note that `DeiT-S` and `ViT-S` names refer exactly to the same architecture.
 
