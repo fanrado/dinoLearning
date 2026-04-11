@@ -24,7 +24,7 @@ DATA_PATH="/nfs/data/1/rrazakami/work/dino/PetImages"
 OUTPUT_ROOT="./OUTPUT_DINO_ITERATIVE"
 
 # Number of GPUs available
-NUM_GPUS=1
+NUM_GPUS=2
 
 # Architecture — kept consistent across both passes
 ARCH="vit_small"
@@ -36,8 +36,8 @@ NUM_WORKERS=10
 # Pass 1 hyperparameters — full augmentations, shape learning
 # ---------------------------------------------------------------------------
 P1_EPOCHS=200
-P1_BATCH_SIZE=64
-P1_LR=0.00025             # 0.0005 base (batch 256) scaled to batch 64: *64/256
+P1_BATCH_SIZE=32
+P1_LR=0.00025             # 0.0005 base (batch 256) scaled to batch 16: *16/256
 P1_MIN_LR=1e-6
 P1_WEIGHT_DECAY=0.04
 P1_WEIGHT_DECAY_END=0.4
@@ -55,7 +55,7 @@ P1_LOCAL_CROPS_NUMBER=8
 # Pass 2 hyperparameters — minimal augmentations, color/detail learning
 # ---------------------------------------------------------------------------
 P2_EPOCHS=100
-P2_BATCH_SIZE=64
+P2_BATCH_SIZE=32
 P2_LR=0.000025            # 10x lower than Pass 1 to preserve learned features
 P2_MIN_LR=1e-7
 P2_WEIGHT_DECAY=0.04
@@ -159,7 +159,7 @@ if [ "$RUN_PASS2" = true ]; then
     echo "  LR             : $P2_LR  (10x lower than Pass 1)"
     echo "  Global crops   : $P2_GLOBAL_CROPS_SCALE"
     echo "  Local crops    : $P2_LOCAL_CROPS_SCALE  x$P2_LOCAL_CROPS_NUMBER"
-    echo "  Augmentations  : MINIMAL (crop + flip only, no color distortion)"
+    echo "  Augmentations  : MINIMAL (crop + flip only; ColorJitter/Grayscale/Solarization disabled)"
     echo "  Output         : $PASS2_OUTPUT"
     echo "============================================================"
 
@@ -185,6 +185,7 @@ if [ "$RUN_PASS2" = true ]; then
         --global_crops_scale $P2_GLOBAL_CROPS_SCALE \
         --local_crops_scale $P2_LOCAL_CROPS_SCALE \
         --local_crops_number "$P2_LOCAL_CROPS_NUMBER" \
+        --color_aug false \
         --pretrained_weights "$PASS1_CHECKPOINT" \
         --data_path "$DATA_PATH" \
         --output_dir "$PASS2_OUTPUT"
@@ -201,6 +202,10 @@ if [ "$RUN_PASS1" = true ] && [ "$RUN_PASS2" = true ]; then
     echo "  k-NN Evaluation — Pass 1 vs Pass 2"
     echo "============================================================"
 
+    PASS1_FEATURES="${PASS1_OUTPUT}/features"
+    PASS2_FEATURES="${PASS2_OUTPUT}/features"
+    mkdir -p "$PASS1_FEATURES" "$PASS2_FEATURES"
+
     echo ""
     echo "--- k-NN: Pass 1 (shape backbone) ---"
     torchrun \
@@ -211,7 +216,9 @@ if [ "$RUN_PASS1" = true ] && [ "$RUN_PASS2" = true ]; then
         --pretrained_weights "${PASS1_OUTPUT}/checkpoint.pth" \
         --checkpoint_key teacher \
         --nb_knn 5 10 20 \
-        --data_path "$DATA_PATH"
+        --data_path "$DATA_PATH" \
+        --dump_features "$PASS1_FEATURES" \
+        2>&1 | tee "${PASS1_FEATURES}/knn_results.log"
 
     echo ""
     echo "--- k-NN: Pass 2 (color+detail backbone) ---"
@@ -223,7 +230,17 @@ if [ "$RUN_PASS1" = true ] && [ "$RUN_PASS2" = true ]; then
         --pretrained_weights "${PASS2_OUTPUT}/checkpoint.pth" \
         --checkpoint_key teacher \
         --nb_knn 5 10 20 \
-        --data_path "$DATA_PATH"
+        --data_path "$DATA_PATH" \
+        --dump_features "$PASS2_FEATURES" \
+        2>&1 | tee "${PASS2_FEATURES}/knn_results.log"
+
+    echo ""
+    echo "--- Feature plots: Pass 1 ---"
+    python plot_features.py --features_dir "$PASS1_FEATURES"
+
+    echo ""
+    echo "--- Feature plots: Pass 2 ---"
+    python plot_features.py --features_dir "$PASS2_FEATURES"
 fi
 
 echo ""
