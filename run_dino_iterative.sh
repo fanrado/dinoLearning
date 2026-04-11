@@ -24,7 +24,7 @@ DATA_PATH="/nfs/data/1/rrazakami/work/dino/PetImages"
 OUTPUT_ROOT="./OUTPUT_DINO_ITERATIVE"
 
 # Number of GPUs available
-NUM_GPUS=2
+NUM_GPUS=1
 
 # Architecture — kept consistent across both passes
 ARCH="vit_small"
@@ -37,7 +37,7 @@ NUM_WORKERS=10
 # ---------------------------------------------------------------------------
 P1_EPOCHS=200
 P1_BATCH_SIZE=32
-P1_LR=0.00025             # 0.0005 base (batch 256) scaled to batch 16: *16/256
+P1_LR=0.0000625           # 0.0005 base (batch 256) scaled to batch 32: *32/256
 P1_MIN_LR=1e-6
 P1_WEIGHT_DECAY=0.04
 P1_WEIGHT_DECAY_END=0.4
@@ -56,7 +56,7 @@ P1_LOCAL_CROPS_NUMBER=8
 # ---------------------------------------------------------------------------
 P2_EPOCHS=100
 P2_BATCH_SIZE=32
-P2_LR=0.000025            # 10x lower than Pass 1 to preserve learned features
+P2_LR=0.00000625          # 10x lower than Pass 1 to preserve learned features
 P2_MIN_LR=1e-7
 P2_WEIGHT_DECAY=0.04
 P2_WEIGHT_DECAY_END=0.04  # kept flat, no extra regularization needed
