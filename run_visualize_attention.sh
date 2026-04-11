@@ -3,7 +3,7 @@
 # ===== DINO Attention Visualization Script =====
 
 # Path to the pretrained checkpoint (teacher weights)
-PRETRAINED_WEIGHTS="./OUTPUT_DINO/checkpoint.pth"
+PRETRAINED_WEIGHTS="./OUTPUT_DINO_ITERATIVE/pass1_shape/checkpoint.pth"
 
 # Architecture and patch size must match the checkpoint
 ARCH="vit_small"
@@ -14,14 +14,14 @@ CHECKPOINT_KEY="teacher"
 
 # Path to the image to visualize
 # IMAGE_PATH="./cow-beach.jpg"
-IMAGE_PATH="./PetImages/Cat/1.jpg"
+IMAGE_PATH="./PetImages/Cat/154.jpg"
 
 # Resize the image to this size before processing
-IMAGE_SIZE="480 480"
+IMAGE_SIZE="1440 1440"
 
 # Output directory for saved attention maps
-OUTPUT_DIR="./OUTPUT_ATTN"
-
+OUTPUT_DIR="./OUTPUT_DINO_ITERATIVE/pass1_shape/attention_visualization"
+mkdir -p "$OUTPUT_DIR"
 # Optional: threshold to keep top xx% of attention mass (e.g. 0.6); leave empty to disable
 THRESHOLD=""
 
