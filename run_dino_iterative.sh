@@ -36,8 +36,8 @@ NUM_WORKERS=10
 # Pass 1 hyperparameters — full augmentations, shape learning
 # ---------------------------------------------------------------------------
 P1_EPOCHS=200
-P1_BATCH_SIZE=32
-P1_LR=0.0000625           # 0.0005 base (batch 256) scaled to batch 32: *32/256
+P1_BATCH_SIZE=64
+P1_LR=0.000125         # 0.0005 base (batch 256) scaled to batch 32: *32/256
 P1_MIN_LR=1e-6
 P1_WEIGHT_DECAY=0.04
 P1_WEIGHT_DECAY_END=0.4
@@ -55,8 +55,8 @@ P1_LOCAL_CROPS_NUMBER=8
 # Pass 2 hyperparameters — minimal augmentations, color/detail learning
 # ---------------------------------------------------------------------------
 P2_EPOCHS=100
-P2_BATCH_SIZE=32
-P2_LR=0.00000625          # 10x lower than Pass 1 to preserve learned features
+P2_BATCH_SIZE=64
+P2_LR=0.0000125          # 10x lower than Pass 1 to preserve learned features
 P2_MIN_LR=1e-7
 P2_WEIGHT_DECAY=0.04
 P2_WEIGHT_DECAY_END=0.04  # kept flat, no extra regularization needed
