@@ -112,11 +112,16 @@ def get_args_parser():
     parser.add_argument('--local_crops_number', type=int, default=8, help="""Number of small
         local views to generate. Set this parameter to 0 to disable multi-crop training.
         When disabling multi-crop we recommend to use "--global_crops_scale 0.14 1." """)
+    parser.add_argument('--color_aug', default=True, type=utils.bool_flag,
+        help="""Whether to apply color augmentations (ColorJitter, RandomGrayscale, Solarization).
+        Set to False in a fine-tuning pass to preserve color context.""")
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for small local view cropping of multi-crop.""")
 
     # Misc
+    parser.add_argument('--pretrained_weights', default='', type=str,
+        help='Path to pretrained weights to initialize the student and teacher networks.')
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
@@ -141,6 +146,7 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
+        color_aug=args.color_aug,
     )
     dataset = datasets.ImageFolder(args.data_path, transform=transform)
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
@@ -210,6 +216,22 @@ def train_dino(args):
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
+
+    # ============ optionally load pretrained weights ... ============
+    if args.pretrained_weights:
+        if os.path.isfile(args.pretrained_weights):
+            state_dict = torch.load(args.pretrained_weights, map_location="cpu")
+            if 'student' in state_dict:
+                student_sd = {k.replace("module.", ""): v for k, v in state_dict['student'].items()}
+                msg = student.module.load_state_dict(student_sd, strict=False)
+                print(f"Student pretrained weights loaded with msg: {msg}")
+            if 'teacher' in state_dict:
+                teacher_sd = {k.replace("module.", ""): v for k, v in state_dict['teacher'].items()}
+                msg = teacher_without_ddp.load_state_dict(teacher_sd, strict=False)
+                print(f"Teacher pretrained weights loaded with msg: {msg}")
+            print(f"Pretrained weights loaded from {args.pretrained_weights}")
+        else:
+            print(f"WARNING: Pretrained weights not found at {args.pretrained_weights}")
 
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(
@@ -417,15 +439,18 @@ class DINOLoss(nn.Module):
 
 
 class DataAugmentationDINO(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
-        flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                p=0.8
-            ),
-            transforms.RandomGrayscale(p=0.2),
-        ])
+    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, color_aug=True):
+        flip_steps = [transforms.RandomHorizontalFlip(p=0.5)]
+        if color_aug:
+            flip_steps += [
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
+                    p=0.8
+                ),
+                transforms.RandomGrayscale(p=0.2),
+            ]
+        flip_and_color_jitter = transforms.Compose(flip_steps)
+
         normalize = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
@@ -438,14 +463,17 @@ class DataAugmentationDINO(object):
             utils.GaussianBlur(1.0),
             normalize,
         ])
-        # second global crop
-        self.global_transfo2 = transforms.Compose([
+        # second global crop — Solarization is also gated on color_aug
+        global_transfo2_steps = [
             transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(0.1),
-            utils.Solarization(0.2),
-            normalize,
-        ])
+        ]
+        if color_aug:
+            global_transfo2_steps.append(utils.Solarization(0.2))
+        global_transfo2_steps.append(normalize)
+        self.global_transfo2 = transforms.Compose(global_transfo2_steps)
+
         # transformation for the local small crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
